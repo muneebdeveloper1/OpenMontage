@@ -1,0 +1,149 @@
+name: Test OpenMontage Zero-Key Documentary Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-montage:
+    name: Test OpenMontage documentary pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: remotion-composer/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Piper TTS
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install piper-tts
+
+      - name: Install Python requirements
+        run: |
+          python -m pip install -r requirements.txt
+
+      - name: Install Remotion Composer dependencies
+        working-directory: remotion-composer
+        run: |
+          npm install
+
+      - name: Create default OpenMontage environment
+        run: |
+          cat > .env <<'EOF'
+          OPENMONTAGE_RUNTIME=remotion
+          FOOTAGE_SOURCE_PREFERENCE=archive_org,nasa,wikimedia
+          ENABLE_LOCAL_LLM_FOOTAGE=false
+          EOF
+
+          echo "Created default .env configuration:"
+          cat .env
+
+      - name: Prepare workspace directories
+        run: |
+          mkdir -p workspace
+          mkdir -p workspace/videos
+          mkdir -p workspace/logs
+          mkdir -p workspace/artifacts
+
+      - name: Run baseline documentary pipeline with local stock media fallback
+        env:
+          OPENMONTAGE_RUNTIME: remotion
+          FOOTAGE_SOURCE_PREFERENCE: archive_org,nasa,wikimedia
+          ENABLE_LOCAL_LLM_FOOTAGE: "false"
+          MEDIA_EXTRACTION_MODE: local-stock-fallback
+        run: |
+          set -o pipefail
+
+          echo "Starting OpenMontage baseline documentary pipeline..."
+          echo "Runtime: ${OPENMONTAGE_RUNTIME}"
+          echo "Footage sources: ${FOOTAGE_SOURCE_PREFERENCE}"
+          echo "Local LLM footage: ${ENABLE_LOCAL_LLM_FOOTAGE}"
+          echo "Media extraction mode: ${MEDIA_EXTRACTION_MODE}"
+
+          # Replace this command with the repository's actual baseline pipeline
+          # entry point if it uses a different script or module.
+          if [ -f scripts/test_baseline_documentary.py ]; then
+            python scripts/test_baseline_documentary.py \
+              --footage-source-preference "${FOOTAGE_SOURCE_PREFERENCE}" \
+              --media-extraction-mode "${MEDIA_EXTRACTION_MODE}" \
+              --output-dir workspace/videos \
+              2>&1 | tee workspace/logs/baseline-documentary.log
+
+          elif [ -f scripts/baseline_documentary.py ]; then
+            python scripts/baseline_documentary.py \
+              --footage-source-preference "${FOOTAGE_SOURCE_PREFERENCE}" \
+              --media-extraction-mode "${MEDIA_EXTRACTION_MODE}" \
+              --output-dir workspace/videos \
+              2>&1 | tee workspace/logs/baseline-documentary.log
+
+          elif [ -f pipeline.py ]; then
+            python pipeline.py \
+              --footage-source-preference "${FOOTAGE_SOURCE_PREFERENCE}" \
+              --media-extraction-mode "${MEDIA_EXTRACTION_MODE}" \
+              --output-dir workspace/videos \
+              2>&1 | tee workspace/logs/baseline-documentary.log
+
+          else
+            echo "No known baseline pipeline entry point was found."
+            echo "Expected one of:"
+            echo "  scripts/test_baseline_documentary.py"
+            echo "  scripts/baseline_documentary.py"
+            echo "  pipeline.py"
+            echo
+            echo "Replace this placeholder step with the actual OpenMontage"
+            echo "baseline documentary command."
+            exit 1
+          fi
+
+      - name: Collect generated videos and logs
+        if: always()
+        run: |
+          find workspace -maxdepth 5 -type f -print | sort || true
+
+          if [ -d remotion-composer/out ]; then
+            cp -R remotion-composer/out/. workspace/artifacts/ || true
+          fi
+
+          if [ -d remotion-composer/output ]; then
+            cp -R remotion-composer/output/. workspace/artifacts/ || true
+          fi
+
+          if [ -d output ]; then
+            cp -R output/. workspace/artifacts/ || true
+          fi
+
+          if [ -d videos ]; then
+            cp -R videos/. workspace/artifacts/ || true
+          fi
+
+      - name: Upload generated videos and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmontage-test-results
+          path: |
+            workspace/
+            .env
+          if-no-files-found: warn
+          retention-days: 14
