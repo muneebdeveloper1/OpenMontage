@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import google.generativeai as genai
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -14,9 +15,16 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
+# List of models to try in order of preference
+MODEL_FALLBACK_LIST = [
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemini-3.5-lite',
+    'gemini-3.1-lite'
+]
+
 def generate_content_metadata(content_type, duration):
-    """Uses Gemini to generate title, description, and script for the video."""
-    print(f"[*] Generating content using Gemini for '{content_type}' ({duration}s)...")
+    """Tries multiple Gemini models with fallbacks and multiple attempts."""
     prompt = f"""
     Create YouTube metadata and script for a '{content_type}' style video.
     Target Video Length: {duration} seconds.
@@ -25,23 +33,45 @@ def generate_content_metadata(content_type, duration):
     DESCRIPTION: [SEO Friendly Description]
     SCRIPT: [Short text script summarizing the main points to display in the video]
     """
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    response = model.generate_content(prompt)
-    text = response.text
     
-    title = "Generated Video"
-    description = "Automated video content."
-    script = "Hello world"
+    max_attempts_per_model = 4
     
-    for line in text.split('\n'):
-        if line.startswith("TITLE:"):
-            title = line.replace("TITLE:", "").strip()
-        elif line.startswith("DESCRIPTION:"):
-            description = line.replace("DESCRIPTION:", "").strip()
-        elif line.startswith("SCRIPT:"):
-            script = line.replace("SCRIPT:", "").strip()
-            
-    return title, description, script
+    # Loop through each model in the fallback list
+    for model_name in MODEL_FALLBACK_LIST:
+        print(f"[*] Attempting to use Gemini model: {model_name}")
+        
+        for attempt in range(1, max_attempts_per_model + 1):
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                text = response.text
+                
+                # Parse output if successful
+                title = "Generated Video"
+                description = "Automated video content."
+                script = "Hello world"
+                
+                for line in text.split('\n'):
+                    if line.startswith("TITLE:"):
+                        title = line.replace("TITLE:", "").strip()
+                    elif line.startswith("DESCRIPTION:"):
+                        description = line.replace("DESCRIPTION:", "").strip()
+                    elif line.startswith("SCRIPT:"):
+                        script = line.replace("SCRIPT:", "").strip()
+                        
+                print(f"[+] Successfully generated content using {model_name} on attempt {attempt}")
+                return title, description, script
+                
+            except Exception as e:
+                print(f"[-] Model {model_name} failed on attempt {attempt}/{max_attempts_per_model}: {e}")
+                if attempt < max_attempts_per_model:
+                    print(f"[*] Retrying {model_name} in 3 seconds...")
+                    time.sleep(3)
+                else:
+                    print(f"[-] Exhausted all attempts for {model_name}. Switching to next fallback model...")
+                    
+    print("[-] Error: All fallback models and attempts failed.")
+    sys.exit(1)
 
 def create_video_file(script_text, duration=15, filename="output.mp4"):
     """Generates an MP4 video file locally using MoviePy."""
@@ -79,7 +109,7 @@ def upload_to_youtube(video_file, title, description):
             'categoryId': '22'
         },
         'status': {
-            'privacyStatus': 'private' # Uploads as private for quality checking
+            'privacyStatus': 'private'
         }
     }
 
