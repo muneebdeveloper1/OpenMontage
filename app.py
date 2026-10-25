@@ -4,7 +4,7 @@ import google.generativeai as genai
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy.editor import TextClip, ColorClip, CompositeVideoClip
+from moviepy import TextClip, ColorClip, CompositeVideoClip
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -48,8 +48,8 @@ def create_video_file(script_text, duration=15, filename="output.mp4"):
     print(f"[*] Rendering video file ({duration}s)...")
     try:
         bg = ColorClip(size=(1280, 720), color=(20, 20, 40), duration=duration)
-        txt = TextClip(script_text, fontsize=32, color='white', size=(1100, 600), method='caption')
-        txt = txt.set_duration(duration).set_position('center')
+        txt = TextClip(text=script_text, font_size=32, color='white', size=(1100, 600), method='caption')
+        txt = txt.with_duration(duration).with_position('center')
         
         video = CompositeVideoClip([bg, txt])
         video.write_videofile(filename, fps=24, codec='libx264', audio=False, logger=None)
@@ -96,7 +96,6 @@ def upload_to_youtube(video_file, title, description):
     print(f"[+] Upload Complete! Video ID: {response.get('id')}")
 
 def main():
-    # Check if running via GitHub Actions environment inputs
     run_mode = os.getenv("RUN_MODE", "manual")
     
     if os.getenv("GITHUB_ACTIONS"):
@@ -113,7 +112,6 @@ def main():
         video_path = create_video_file(script, duration=duration)
         upload_to_youtube(video_path, title, description)
     else:
-        # Local interactive terminal fallback
         print("=== Local Mode ===")
         content_type = "Educational Explainer"
         duration = 15
