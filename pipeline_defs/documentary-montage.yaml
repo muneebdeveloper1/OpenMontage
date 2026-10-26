@@ -1,17 +1,54 @@
 name: documentary-montage
 version: "1.0"
 description: >
-  Retrieval-first thematic montage pipeline. Builds a semantic corpus of real-world
-  footage from Pexels, Archive.org (Prelinger et al.), NASA, Wikimedia Commons, and
-  Unsplash, then uses CLIP-based
-  retrieval to fill slot descriptions from a thematic brief. The edit arranges clips
-  by narrative beat with music sync and uniform color grade across mixed-era footage.
-  Inspired by Adam Curtis / Chris Marker / Errol Morris tone poems.
+  Retrieval-first thematic montage pipeline. Builds a semantic corpus of
+  real-world footage from Pexels, Archive.org (Prelinger et al.), NASA,
+  Wikimedia Commons, and Unsplash, then uses CLIP-based retrieval to fill slot
+  descriptions from a thematic brief. The edit arranges clips by narrative beat
+  with music sync and uniform color grade across mixed-era footage. Inspired by
+  Adam Curtis / Chris Marker / Errol Morris tone poems.
 category: documentary
 stability: beta
 default_checkpoint_policy: guided
 
-# Reference video input support
+# ---------------------------------------------------------------------------
+# defaults — inherited by every stage unless a stage overrides them
+# ---------------------------------------------------------------------------
+defaults:
+  render_runtime: remotion          # LOCKED — end-tag overlay depends on it
+  renderer_family: documentary-montage
+
+  # Shot rhythm: one sentence -> one 4-5s shot
+  shot_min_seconds: 4.0
+  shot_max_seconds: 5.0
+  max_adjacent_same_source: 1
+
+  # Narration (Edge TTS — free, no API key, auto-discovered provider)
+  tts_provider: edge
+  tts_voice: christopher            # -> en-US-ChristopherNeural
+  tts_rate: "+0%"
+  voice_strategy: sentence_segmented
+
+  # Retrieval
+  asset_strategy: stock_first
+  min_asset_score: 0.35
+  stock_source_priority:
+    - nasa
+    - archive_org
+    - wikimedia
+    - pexels
+    - pixabay_video
+    - unsplash
+    - esa
+    - jaxa
+    - loc
+    - nara
+
+  # Last-resort visual so a cut never collapses to text
+  avatar_fallback_dir: assets/avatar
+  fallback_scene: avatar_fallback
+  allow_text_card_roles: [chapter, title]
+
 reference_input:
   supported: false
 
@@ -45,8 +82,7 @@ compatible_playbooks:
 stages:
   - name: idea
     skill: pipelines/documentary-montage/idea-director
-    produces:
-      - brief
+    produces: [brief]
     tools_available: []
     checkpoint_required: true
     human_approval_default: true
@@ -57,6 +93,7 @@ stages:
       - Music plan is present (MANDATORY — silent only if user explicitly opted out)
       - End-tag plan is present (MANDATORY — one philosophical closing line, rendered as Remotion end-card, default mode "overlay" on final scenes, unless user explicitly opted out)
       - Narration plan is present (narration itself is OPTIONAL — absence is fine if music + visuals + end-tag carry the register)
+      - Narration provider is edge with voice christopher unless the user chose otherwise
     success_criteria:
       - Schema-valid brief artifact
       - thematic_question present in metadata
@@ -65,10 +102,8 @@ stages:
 
   - name: scene_plan
     skill: pipelines/documentary-montage/scene-director
-    required_artifacts_in:
-      - brief
-    produces:
-      - scene_plan
+    required_artifacts_in: [brief]
+    produces: [scene_plan]
     tools_available: []
     checkpoint_required: true
     human_approval_default: true
@@ -78,6 +113,8 @@ stages:
       - At least 2 slots are marked hero
       - Slot count and target holds match the tone/duration math
       - era_mix is reflected in preferred_sources distribution
+      - Every slot target_hold_seconds is within 4.0-5.0
+      - Every sentence of narration maps to exactly one slot
     success_criteria:
       - Schema-valid scene_plan artifact
       - metadata.slots[] present with per-slot queries and preferred_sources
@@ -85,12 +122,9 @@ stages:
 
   - name: assets
     skill: pipelines/documentary-montage/asset-director
-    required_artifacts_in:
-      - scene_plan
-      - brief
-    produces:
-      - asset_manifest
-    required_tools: []  # fast path needs only direct_clip_search; standard path needs corpus_builder + clip_search
+    required_artifacts_in: [scene_plan, brief]
+    produces: [asset_manifest]
+    required_tools: []
     optional_tools:
       - direct_clip_search
       - corpus_builder
@@ -109,6 +143,7 @@ stages:
       - Provenance (provider, original_url, license) present on every asset
       - "Standard path: corpus size >= 8x slot count, scores >= 0.22, diversify ran clean"
       - "Fast path: thumbnails inspected, cross-act reuse noted, gaps filled"
+      - Slots below min_asset_score are filled from assets/avatar, never left empty
       - rejected_picks log has reasons for passes (standard path)
     success_criteria:
       - Schema-valid asset_manifest artifact
@@ -117,37 +152,33 @@ stages:
 
   - name: edit
     skill: pipelines/documentary-montage/edit-director
-    required_artifacts_in:
-      - scene_plan
-      - asset_manifest
-    produces:
-      - edit_decisions
+    required_artifacts_in: [scene_plan, asset_manifest]
+    produces: [edit_decisions]
     tools_available: []
     checkpoint_required: true
     human_approval_default: true
     review_focus:
       - renderer_family is locked to documentary-montage
+      - render_runtime is locked to remotion
       - Hero slots hold longest; mid-sequence cutaways shortest
       - No two adjacent cuts share subject AND scale
       - Transition vocabulary is at most 4 distinct values
       - Music config is present (MANDATORY — silent only if brief.metadata.music_plan.source=none with explicit opt-out note)
       - "End-tag timing is present (MANDATORY — overlay mode: end_tag.offset_seconds in edit_decisions; concat mode: end-tag appended after body. Unless brief.metadata.end_tag_plan is null with explicit opt-out note)"
       - total_duration_seconds matches sum of cut durations (body only — end-tag overlay does not extend duration; concat mode adds tag duration)
+      - Every cut carries a real media `source` — never a placeholder or text label
+      - Every cut duration is between 4.0 and 5.0 seconds
       - Every cut has a reason
     success_criteria:
       - Schema-valid edit_decisions artifact
       - Timeline duration within 10% of brief.duration_seconds
+      - Zero cuts without a resolvable media source
 
   - name: compose
     skill: pipelines/documentary-montage/compose-director
-    required_artifacts_in:
-      - edit_decisions
-      - asset_manifest
-      - brief
-    produces:
-      - render_report
-    required_tools:
-      - video_compose
+    required_artifacts_in: [edit_decisions, asset_manifest, brief]
+    produces: [render_report]
+    required_tools: [video_compose]
     optional_tools:
       - audio_mixer
       - color_grade
