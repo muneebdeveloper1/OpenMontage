@@ -1,8 +1,11 @@
 """Edge TTS — Microsoft Fast Neural voices via the free `edge-tts` package.
 
+Requires edge-tts >= 7.3.1 — that release adds Sec-MS-GEC v2 token support,
+which is mandatory after the Microsoft Edge 155 auth change.
+
 No API key. Auto-discovered by TTSSelector because capability == "tts".
 
-    pip install edge-tts
+    pip install "edge-tts>=7.3.1"
 
 Default voice: en-US-ChristopherNeural.
 """
@@ -43,13 +46,15 @@ VOICES: dict[str, str] = {
     "ana": "en-US-AnaNeural",
 }
 
-# Free Microsoft voices, ordered by documentary-narration suitability.
 RECOMMENDED_DEFAULT = "en-US-ChristopherNeural"
+
+# 7.x boundary modes. SentenceBoundary is the library default.
+BOUNDARY_MODES = {"SentenceBoundary", "WordBoundary"}
 
 
 class EdgeTTS(BaseTool):
     name = "edge_tts"
-    version = "1.0.0"
+    version = "1.1.0"
     tier = ToolTier.VOICE
     capability = "tts"
     provider = "edge"
@@ -57,12 +62,16 @@ class EdgeTTS(BaseTool):
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.DETERMINISTIC
     runtime = ToolRuntime.API  # network call, but zero cost and zero key
-    dependencies = ["pkg:edge_tts"]
+    dependencies = ["pkg:edge_tts>=7.3.1"]
 
-    install_instructions = "pip install edge-tts"
+    install_instructions = 'pip install "edge-tts>=7.3.1"'
 
     agent_skills = ["text-to-speech"]
-    capabilities = ["text_to_speech", "sentence_segmented_narration"]
+    capabilities = [
+        "text_to_speech",
+        "sentence_segmented_narration",
+        "word_timestamps",
+    ]
     supports = {
         "offline_fallback": False,
         "multilingual": True,
@@ -107,6 +116,25 @@ class EdgeTTS(BaseTool):
             },
             "volume": {"type": "string", "default": "+0%"},
             "pitch": {"type": "string", "default": "+0Hz"},
+            "boundary": {
+                "type": "string",
+                "enum": ["SentenceBoundary", "WordBoundary"],
+                "default": "SentenceBoundary",
+                "description": (
+                    "Metadata granularity returned by the service. "
+                    "'WordBoundary' yields per-word offsets (for captions)."
+                ),
+            },
+            "connect_timeout": {
+                "type": "integer",
+                "default": 10,
+                "description": "WebSocket connect timeout in seconds.",
+            },
+            "receive_timeout": {
+                "type": "integer",
+                "default": 60,
+                "description": "Per-read timeout in seconds.",
+            },
         },
     }
 
@@ -114,7 +142,7 @@ class EdgeTTS(BaseTool):
     def get_status(self):
         if edge_tts is None:
             return self._status_unavailable(
-                "edge-tts is not installed. Run: pip install edge-tts"
+                'edge-tts is not installed. Run: pip install "edge-tts>=7.3.1"'
             )
         return self._status_available()
 
@@ -123,7 +151,7 @@ class EdgeTTS(BaseTool):
         if edge_tts is None:
             return ToolResult(
                 success=False,
-                error="edge-tts is not installed. Run: pip install edge-tts",
+                error='edge-tts is not installed. Run: pip install "edge-tts>=7.3.1"',
             )
 
         text = (inputs.get("text") or "").strip()
@@ -132,7 +160,9 @@ class EdgeTTS(BaseTool):
 
         output_path = inputs.get("output_path")
         if not output_path:
-            return ToolResult(success=False, error="edge_tts: 'output_path' is required.")
+            return ToolResult(
+                success=False, error="edge_tts: 'output_path' is required."
+            )
 
         raw_voice = inputs.get("voice_id") or inputs.get("voice") or RECOMMENDED_DEFAULT
         voice_id = VOICES.get(str(raw_voice).strip().lower(), str(raw_voice).strip())
@@ -141,17 +171,32 @@ class EdgeTTS(BaseTool):
         volume = str(inputs.get("volume", "+0%"))
         pitch = str(inputs.get("pitch", "+0Hz"))
 
+        boundary = str(inputs.get("boundary", "SentenceBoundary"))
+        if boundary not in BOUNDARY_MODES:
+            return ToolResult(
+                success=False,
+                error=f"edge_tts: boundary must be one of {sorted(BOUNDARY_MODES)}",
+            )
+
+        connect_timeout = int(inputs.get("connect_timeout", 10))
+        receive_timeout = int(inputs.get("receive_timeout", 60))
+
         out = Path(output_path).expanduser()
         out.parent.mkdir(parents=True, exist_ok=True)
 
+        # 7.x signature: keyword-only rate/volume/pitch/boundary/timeouts.
+        communicate = edge_tts.Communicate(
+            text=text,
+            voice=voice_id,
+            rate=rate,
+            volume=volume,
+            pitch=pitch,
+            boundary=boundary,  # type: ignore[arg-type]
+            connect_timeout=connect_timeout,
+            receive_timeout=receive_timeout,
+        )
+
         async def _render() -> None:
-            communicate = edge_tts.Communicate(
-                text=text,
-                voice=voice_id,
-                rate=rate,
-                volume=volume,
-                pitch=pitch,
-            )
             await communicate.save(str(out))
 
         try:
@@ -181,7 +226,10 @@ class EdgeTTS(BaseTool):
                 "model": voice_id,
                 "characters": len(text),
                 "rate": rate,
+                "boundary": boundary,
                 "bytes": out.stat().st_size,
+                # Word-level offsets are available via a separate stream() pass
+                # if you need them for captions — see note below.
             },
             artifacts=[str(out)],
             cost_usd=0.0,
